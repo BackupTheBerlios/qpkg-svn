@@ -1,0 +1,33 @@
+#!/bin/bash
+# -*- coding: utf-8 -*-
+# vim: set expandtab tabstop=4 shiftwidth=4:
+########################################################################
+#							   Query PKG							   #
+#						   packagesearch-script						   #
+########################################################################
+#	This script was written by Alexander Mieland (dma147 in #gentoo.de)#
+#	Contact:	dma147 _AT_ linux-stats _DOT_ org					   #
+#	Homepage:	http://www.linux-stats.org							   #
+#	IRC:		#linux-stats, #archlinux-amfaemger on irc-freenode.net #
+########################################################################
+# $Id: $
+
+if [ ${UID} != 0 ]; then
+	echo "You have to be root to update the qpkg database..."
+	exit
+fi
+
+
+PACKAGE="qpkg.dbpack.tar.bz2"
+PACKAGEURL="http://www.linux-stats.org/download/${PACKAGE}"
+DBDIR="/usr/share/qpkg"
+
+echo -e "\nUpdating qpkg database...\n"
+cd /tmp
+wget ${PACKAGEURL}
+tar -xjf ./${PACKAGE}
+cp ./qpkgpack* ${DBDIR}
+cp ./qpkgrepo* ${DBDIR}
+rm -fr ./qpkg*
+echo -e "\ndone!\n"
+

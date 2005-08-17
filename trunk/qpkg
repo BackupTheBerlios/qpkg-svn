@@ -1,0 +1,1198 @@
+#! /usr/bin/env python
+# -*- coding: utf-8 -*-
+# vim: set expandtab tabstop=4 shiftwidth=4:
+########################################################################
+#							   Query PKG							   #
+#						   packagesearch-script						   #
+########################################################################
+#	This script was written by Alexander Mieland (dma147 in #gentoo.de)#
+#	Contact:	dma147 _AT_ linux-stats _DOT_ org					   #
+#	Homepage:	http://www.linux-stats.org							   #
+#	IRC:		#linux-stats, #archlinux-amfaemger on irc-freenode.net #
+########################################################################
+# $Id: $
+
+# some variable declarations
+CLIENT_VERSION		= "0.1.3"
+AUR_HOST			= "aur.archlinux.org"
+AUR_PORT			= "80"
+AUR_PATH			= "/packages.php"
+AURPORT				= "http://"+AUR_HOST+AUR_PATH
+AUR_PAGE			= "http://"+AUR_HOST
+DBDIR				= "/usr/share/qpkg"
+
+try:
+	import os, sys, pwd, grp
+except SystemExit, e:
+	raise
+except:
+	out(red("Failed to import needed system-modules (sys, os, pwd, grp)! "))
+	out(red("Something is _VERY_ wrong with python. "))
+	raise SystemExit, 127
+
+try:
+	import re, commands, time, urllib2, httplib, mimetypes, string
+except SystemExit, e:
+	raise
+except:
+	out(red("Failed to import needed command-modules (re, commands, time, urllib2)! "))
+	out(red("Something is _VERY_ wrong with python. "))
+	raise SystemExit, 127
+
+import signal, dircache
+from time import gmtime, strftime
+from qpkg.BeautifulSoup import BeautifulSoup
+
+
+if os.path.exists(DBDIR):
+	sys.path.append(DBDIR)
+else:
+	out(red("\n!  The directory for the qpkg-databases doesn't exist!"))
+	raise SystemExit, 127
+
+try:
+	import qpkgpackc, qpkgpackr, qpkgpackn, qpkgpackd, qpkgpackv, qpkgrepos
+except SystemExit, e:
+	raise
+except:
+	out(red("Failed to import the needed databases! "))
+	out(red(""))
+	raise SystemExit, 127
+
+
+
+
+
+
+def strip_crap(string):
+	string = re.sub(r'\b(\+)', r'%2B', string)
+	string = re.sub(r'\b(\+)', r'%2B', string)
+	string = re.sub(r'\b(\+)', r'%2B', string)
+	string = re.sub(r'\b(\s)', r'%20', string)
+	string = re.sub(r'\b(\s)', r'%20', string)
+	string = re.sub(r'\b(\s)', r'%20', string)
+	string = re.sub(r'\b(`)', r'\'', string)
+	string = re.sub(r'\b( )', r'', string)
+	return string
+
+
+def red(text):
+	return "\033[1;31m"+text+"\033[0m"
+def blue(text):
+	return "\033[1;34m"+text+"\033[0m"
+
+vred = "\033[1;31m"
+vblue = "\033[1;34m"
+vnoc = "\033[0m"
+
+
+
+def post_multipart(host, port, selector, fields, files):
+	chost = host+":"+port
+	content_type, body = encode_multipart_formdata(fields, files)
+	PROXY = ""
+	if os.environ.has_key('http_proxy'):
+		PROXY = os.environ['http_proxy'].strip('/')
+	if PROXY != "":
+		HTTP = re.findall(r'\b(http)', PROXY)
+		if not HTTP or len(HTTP) == 0:
+			out(red("\n! Your http_proxy setting is wrong!"))
+			out("! The string \"http://\" is missed.")
+			out("! Try something like \"http://your.proxy.com:port\".")
+			out("! I'll continue here by adding the missed string to our")
+			out("! temporary proxy-setting. You should change $http_proxy")
+			out("! by yoursef.\n")
+			PROXY = "http://"+PROXY
+		tmp = re.sub(r'\b(http:\/\/)', r'', PROXY)
+		proxy = commands.getoutput("echo "+tmp+" | sed -e 's/\([^:]*\):[0-9]*/\\1/'")
+		port = commands.getoutput("echo "+tmp+" | sed -e 's/[^:]*:\([0-9]*\)/\\1/'")
+		try:
+			h = httplib.HTTP(proxy, port)
+		except:
+			out(red("\n! Could not connect to "+chost+"! Reason unknown.\n"))
+			raise SystemExit, 127
+		try:
+			h.putrequest("POST", "http://"+host+selector)
+		except:
+			out(red("\n! Could not set up the put request to the server! Reason unknown.\n"))
+			raise SystemExit, 127
+	else:
+		try:
+			h = httplib.HTTP(chost)
+		except:
+			out(red("\n! Could not connect to "+chost+"! Reason unknown.\n"))
+			raise SystemExit, 127
+		try:
+			h.putrequest('POST', selector)
+		except:
+			out(red("\n! Could not set up the put request to the server! Reason unknown.\n"))
+			raise SystemExit, 127
+
+	h.putheader('Host', host)
+	h.putheader('Content-Type', content_type)
+	h.putheader('Content-Length', str(len(body)))
+	h.putheader('Keep-Alive', '300')
+	h.putheader('Connection', 'close')
+
+	try:
+		h.endheaders()
+	except:
+		out(red("\n! No internet-connection available! Please dialup.\n"))
+		raise SystemExit, 127
+	try:
+		h.send(body)
+	except:
+		out(red("\n! Could not send the data to the server! Reason unknown.\n"))
+		raise SystemExit, 127
+	errcode, errmsg, headers = h.getreply()
+	if h.file:
+		return h.file.read()
+	else:
+		return errmsg
+
+def encode_multipart_formdata(fields, files):
+	BOUNDARY = '----------ThIs_Is_tHe_bouNdaRY_$'
+	CRLF = '\r\n'
+	L = []
+	for (key, value) in fields:
+		L.append('--' + BOUNDARY)
+		L.append('Content-Disposition: form-data; name="%s"' % key)
+		L.append('')
+		L.append(value)
+	for (key, filename, value) in files:
+		L.append('--' + BOUNDARY)
+		L.append('Content-Disposition: form-data; name="%s"; filename="%s"' % (key, filename))
+		L.append('Content-Type: %s' % get_content_type(filename))
+		L.append('')
+		L.append(value)
+	L.append('--' + BOUNDARY + '--')
+	L.append('')
+	body = CRLF.join(L)
+	content_type = 'multipart/form-data; boundary=%s' % BOUNDARY
+	return content_type, body
+
+def get_content_type(filename):
+	return mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+
+def donothing():
+	return True
+
+def readFile(fileName):
+	f = open(fileName)
+	data = f.read()
+	f.close()
+	return data
+
+def out(text):
+	print text
+
+def readfirstline(file):
+	f=open(file, 'r')
+	line=f.readline()
+	f.close()
+	return line
+
+
+def GetTotalSize(directory):
+	currdir = os.getcwd()
+	os.chdir(directory)
+	total_size = 0
+	a=dircache.listdir(directory)
+	list_of_files=a[:]	
+	if len(list_of_files) != 0:
+		for file in list_of_files:
+			if file == ".." or file == ".":  continue
+			size = os.stat(file)[6]
+			total_size = total_size + size
+	os.chdir(currdir)
+	total_size = int(str(total_size).strip("L"))
+	return total_size
+
+
+def handler(signo, frame):
+    if signo == 2:
+		out(red("\nShutting down engine..."))
+		out(blue("Shutdown complete. Goodbye. ;)"))
+		raise SystemExit, 127
+		sys.exit(1)
+
+
+#					  Signal				Signum		Description
+
+signal.signal(signal. SIGHUP, handler)		# 1       	 Hangup (POSIX).  
+signal.signal(signal. SIGINT, handler)		# 2       	 Interrupt (ANSI).  
+signal.signal(signal. SIGQUIT, handler)		# 3       	 Quit (POSIX).  
+signal.signal(signal. SIGILL, handler)		# 4       	 Illegal instruction (ANSI).  
+signal.signal(signal. SIGTRAP, handler)		# 5       	 Trace trap (POSIX).  
+signal.signal(signal. SIGABRT, handler)		# 6       	 Abort (ANSI).  
+signal.signal(signal. SIGIOT, handler)		# 6       	 IOT trap (4.2 BSD).  
+signal.signal(signal. SIGBUS, handler)		# 7       	 BUS error (4.2 BSD).  
+signal.signal(signal. SIGFPE, handler)		# 8       	 Floating-point exception (ANSI).  
+signal.signal(signal. SIGUSR1, handler)		# 10      	 User-defined signal 1 (POSIX).  
+signal.signal(signal. SIGSEGV, handler)		# 11      	 Segmentation violation (ANSI).  
+signal.signal(signal. SIGUSR2, handler)		# 12      	 User-defined signal 2 (POSIX).  
+signal.signal(signal. SIGPIPE, handler)		# 13      	 Broken pipe (POSIX).  
+signal.signal(signal. SIGALRM, handler)		# 14      	 Alarm clock (POSIX).  
+signal.signal(signal. SIGTERM, handler)		# 15      	 Termination (ANSI).  
+signal.signal(signal. SIGCHLD, handler)		# 17      	 Child status has changed (POSIX).  
+signal.signal(signal. SIGCONT, handler)		# 18      	 Continue (POSIX).  
+signal.signal(signal. SIGTSTP, handler)		# 20      	 Keyboard stop (POSIX).  
+signal.signal(signal. SIGTTIN, handler)		# 21      	 Background read from tty (POSIX).  
+signal.signal(signal. SIGTTOU, handler)		# 22      	 Background write to tty (POSIX).  
+signal.signal(signal. SIGURG, handler)		# 23      	 Urgent condition on socket (4.2 BSD).  
+signal.signal(signal. SIGXCPU, handler)		# 24      	 CPU limit exceeded (4.2 BSD).  
+signal.signal(signal. SIGXFSZ, handler)		# 25      	 File size limit exceeded (4.2 BSD).  
+signal.signal(signal. SIGVTALRM, handler)	# 26      	 Virtual alarm clock (4.2 BSD).  
+signal.signal(signal. SIGPROF, handler)		# 27      	 Profiling alarm clock (4.2 BSD).  
+signal.signal(signal. SIGWINCH, handler)	# 28      	 Window size change (4.3 BSD, Sun).  
+signal.signal(signal. SIGIO, handler)		# 29      	 I/O now possible (4.2 BSD).  
+signal.signal(signal. SIGPWR, handler)		# 30      	 Power failure restart (System V).  
+signal.signal(signal. SIGSYS, handler)		# 31      	 Bad system call.  
+
+
+
+
+HELP = 0
+NC = 0
+TITLE = 0
+DESC = 0
+AUR = 0
+FILE = 0
+LIST = 0
+INFO = 0
+INSTALLED = 0
+VERSION = 0
+INSTALLAURPKG = 0
+REPO = 0
+SPACE = 0
+
+options=[
+"--help",
+"--version",
+"--nocolor",
+"--title",
+"--desc",
+"--aur",
+"--file",
+"--list",
+"--info",
+"--installed",
+"--install",
+"--repo",
+"--space"
+]
+
+shortmapping={
+"h":"--help",
+"v":"--version",
+"n":"--nocolor",
+"t":"--title",
+"d":"--desc",
+"a":"--aur",
+"f":"--file",
+"l":"--list",
+"i":"--info",
+"I":"--installed",
+"p":"--install",
+"r":"--repo",
+"s":"--space"
+}
+
+myopts=[]
+
+tmpcmdline=sys.argv[1:]
+cmdline=[]
+for x in tmpcmdline:
+	if x[0:1]=="-"and x[1:2]!="-":
+		for y in x[1:]:
+			if shortmapping.has_key(y):
+				if shortmapping[y] in cmdline:
+					out(red("*** Warning: Redundant use of "+shortmapping[y]+" "))
+				else:
+					cmdline.append(shortmapping[y])
+			else:
+				out(red("!!! Error: -"+y+" is an invalid short action or option. "))
+				sys.exit(1)
+	else:
+		cmdline.append(x)
+
+for x in cmdline:
+	if not x:
+		continue
+	if len(x)>=2 and x[0:2]=="--":
+		if x in options:
+			myopts.append(x)
+		else:
+			out(red("!!! Error: "+x+" is an invalid option. "))
+			sys.exit(1)
+
+
+if ("--help" in myopts):
+	HELP = 1
+if ("--version" in myopts):
+	VERSION = 1
+if ("--nocolor" in myopts):
+	NC = 1
+if ("--title" in myopts):
+	TITLE = 1
+if ("--desc" in myopts):
+	DESC = 1
+if ("--aur" in myopts):
+	AUR = 1
+if ("--file" in myopts):
+	FILE = 1
+if ("--list" in myopts):
+	LIST = 1
+if ("--info" in myopts):
+	INFO = 1
+if ("--installed" in myopts):
+	INSTALLED = 1
+if ("--install" in myopts):
+	INSTALLAURPKG = 1
+if ("--repo" in myopts):
+	REPO = 1
+if ("--space" in myopts):
+	SPACE = 1
+
+if TITLE == 0 and DESC == 0 and AUR == 0:
+	TITLE = 1
+	AUR = 1
+
+
+if HELP == 1:
+	out("\nqpkg-"+CLIENT_VERSION+"\n")
+	out("qpkg is Arch Linux' \"query package\" tool, using it, you can")
+	out("search for packages in all known repositories and in AUR,")
+	out("install packages directly from AUR, find packages owning files")
+	out("on your filesystem, check the integrity of installed packages,")
+	out("and do other queries against installed or uninstalled packages.")
+	out(" ")
+	if NC == 0:
+		out(blue("Usage:\n       qpkg [options] [pkgname] [file]"))
+	else:
+		out("Usage:\n       qpkg [options] [pkgname] [file]")
+	if NC == 0:
+		out("\nSearch Package Modifiers:")
+		out("   \033[1;34m-t, --title\033[0m         Search in package-names (default)  ")
+		out("   \033[1;34m-d, --desc\033[0m          Search in package-descriptions  ")
+		out("   \033[1;34m-a, --aur\033[0m           Search on AUR for packages (default)  ")
+		out("\nSearch File Modifiers:")
+		out("   \033[1;34m-f, --file\033[0m          Search for package that contains <file>")
+		out("\nInstallation Modifiers:")
+		out("   \033[1;34m-p, --install\033[0m       Installs the given package from AUR (only root!)")
+		out("   \033[1;34m-r, --repo list\033[0m     Lists all available user repositories")
+		out("   \033[1;34m-r, --repo add\033[0m      Adds a repository to your /etc/pacman.conf")
+		out("   \033[1;34m-r, --repo del\033[0m      Deletes a repository from your /etc/pacman.conf")
+		out("   \033[1;34m-s, --space\033[0m         Frees space (deletes unneeded src- and bin-packages")
+		out("\nInformation Selection:")
+		out("   \033[1;34m-l, --list\033[0m          List package content  ")
+		out("   \033[1;34m-i, --info\033[0m          Get package information  ")
+		out("   \033[1;34m-I, --installed\033[0m     Get all installed packages")
+		out("\nOperation Modifiers:")
+		out("   \033[1;34m-n, --nocolor\033[0m       Colorless output  ")
+		out("\nHelp Modifiers:")
+		out("   \033[1;34m-h, --help\033[0m          This helptext  ")
+		out("   \033[1;34m-v, --version\033[0m       Version information  ")
+	else:
+		out("\nSearch Package Modifiers:")
+		out("   -t, --title         Search in package-names (default)  ")
+		out("   -d, --desc          Search in package-descriptions  ")
+		out("   -a, --aur           Search on AUR for packages (default)  ")
+		out("\nSearch File Modifiers:")
+		out("   -f, --file          Search for package that contains <file>")
+		out("\nInstallation Modifiers:")
+		out("   -p, --install       Installs the given package from AUR (only root!)")
+		out("   -r, --repo list     Lists all available user repositories")
+		out("   -r, --repo add      Adds a repository to your /etc/pacman.conf")
+		out("   -r, --repo del      Deletes a repository from your /etc/pacman.conf")
+		out("   -s, --space         Frees space (deletes unneeded src- and bin-packages")
+		out("\nInformation Selection:")
+		out("   -l, --list          List package content  ")
+		out("   -i, --info          Get package information  ")
+		out("   -I, --installed     Get all installed packages")
+		out("\nOperation Modifiers:")
+		out("   -n, --nocolor       Colorless output  ")
+		out("\nHelp Modifiers:")
+		out("   -h, --help          This helptext  ")
+		out("   -v, --version       Version information  ")
+	out("\nYou can use full featured regular expressions for your searchstring,")
+	out("except for the search on AUR! AUR doesn't provide regexp search!\n")
+	out("This application was written 2005 by Alexander 'dma147' Mieland")
+	out("Contact: dma147@linux-stats.org")
+	out("IRC:  #archlinux, #archlinux.de, #linux-stats on irc.freenode.net\n")
+	sys.exit(0)
+
+
+if VERSION == 1:
+	out("\nThis is qpkg-"+CLIENT_VERSION)
+	out("qpkg is Arch Linux' \"query package\" tool, using it, you can")
+	out("search for packages in all known repositories and in AUR,")
+	out("install packages directly from AUR, find packages owning files")
+	out("on your filesystem, check the integrity of installed packages,")
+	out("and do other queries against installed or uninstalled packages.\n")
+	out("This was written by Alexander Mieland <dma147@linux-stats.org>")
+	out("IRC: #archlinux, #archlinux.de, #linux-stats on irc.freenode.net\n")
+	out("If you've found any bugs or have any questions,")
+	out("please feel free to contact me.\n")
+	sys.exit(0)
+
+
+if INSTALLED == 1:
+	out("Getting installed packages...  \n")
+	RESPONSE = commands.getoutput("pacman -Qi 2>/dev/null")
+	
+	if not RESPONSE:
+		out("No packages installed...")
+	else:
+		out(RESPONSE)
+	out("")
+	sys.exit(0)
+
+SEARCH = ""
+
+
+
+if SPACE == 1:
+	uid=os.getuid()
+	if uid != 0:
+		if NC == 0:
+			out(red("\nYou have to be root to free diskspace!\n"))
+		else:
+			out("\nYou have to be root to free diskspace!\n")
+		raise SystemExit, 127
+	
+	if NC == 0:
+		out(blue("\nCalculating directory sizes and space which can be freed..."))
+	else:
+		out("\nCalculating directory sizes and space which can be freed...")
+	
+	DIR1 = "/var/cache/pacman/src"
+	DIR2 = "/var/cache/pacman/pkg"
+	DIRSIZE1 = [DIR1]
+	DIRSIZE2 = [DIR2]
+	a=dircache.listdir(DIR1)
+	list_of_files1=a[:]	
+	DIRSIZE1.append(len(list_of_files1))
+	b=dircache.listdir(DIR2)
+	list_of_files2=b[:]	
+	DIRSIZE2.append(len(list_of_files2))
+	DIRSIZE1.append(GetTotalSize(DIR1))
+	DIRSIZE2.append(GetTotalSize(DIR2))
+	
+	MB1 = int(DIRSIZE1[2]) / (1024.0*1024)
+	MB2 = int(DIRSIZE2[2]) / (1024.0*1024)
+	
+	totalb = int(DIRSIZE1[2]) + int(DIRSIZE2[2])
+	totalmb = round(int(totalb) / (1024.0*1024), 3)
+	
+	out("\nDirectory-Listing:")
+	out("=============================================================")
+	print "%-25s %-8s %-14s %-14s" % ('Directory', 'Files', 'Size (b)', 'Size (mb)')
+	out("-------------------------------------------------------------")
+	print "%-25s %-8s %-14s %-14s" % (DIRSIZE1[0], str(DIRSIZE1[1]), str(DIRSIZE1[2]), str(round(MB1, 3)))
+	print "%-25s %-8s %-14s %-14s" % (DIRSIZE2[0], str(DIRSIZE2[1]), str(DIRSIZE2[2]), str(round(MB2, 3)))
+	out("-------------------------------------------------------------")
+	print "%-34s %-14s %-14s" % ('Total used space:', str(totalb), str(totalmb))
+
+	
+	KEEPFILES = []
+	for x in list_of_files1:
+		file = re.findall("^(nvidia|ati-drivers)-.*$", x)
+		if len(file) >= 1:
+			KEEPFILES.append(x)
+	for x in list_of_files2:
+		file = re.findall("^(nvidia|ati-drivers)-.*$", x)
+		if len(file) >= 1:
+			KEEPFILES.append(x)
+	
+	DELETE = 1
+	if len(KEEPFILES) >= 1:
+		out("\nI've found some files, which will be needed when building")
+		out("a new kernel or something similar.")
+		out("These Files are:")
+		for i in KEEPFILES:
+			out("- "+i)
+		out("\nShould I delete them too, or do you want to keep them?")
+		YESNO = raw_input("[KEEP/delete] [K/d]   ")
+		if YESNO == "d" or YESNO == "D" or YESNO == "del" or YESNO == "Del" or YESNO == "DEL" or YESNO == "delete" or YESNO == "Delete" or YESNO == "DELETE":
+			DELETE = 1
+		else:
+			DELETE = 0
+	
+	out("\nDo you want me to start the deletion of the unused files now?")
+	YESNO = raw_input("[Y/n]   ")
+	if YESNO == "n" or YESNO == "N" or YESNO == "no" or YESNO == "No" or YESNO == "NO":
+		sys.exit(1)
+	
+	for x in list_of_files1:
+		if DELETE == 0:
+			f = 0
+			for y in KEEPFILES:
+				if y == x:
+					f = 1
+			if f == 0:
+				os.system("rm -f "+DIR1+"/"+x+" &>/dev/null")
+		else:
+			os.system("rm -f "+DIR1+"/"+x+" &>/dev/null")
+	for w in list_of_files2:
+		if DELETE == 0:
+			f = 0
+			for z in KEEPFILES:
+				if z == w:
+					f = 1
+			if f == 0:
+				os.system("rm -f "+DIR2+"/"+w+" &>/dev/null")
+		else:
+			os.system("rm -f "+DIR2+"/"+w+" &>/dev/null")
+	
+	DIR1 = "/var/cache/pacman/src"
+	DIR2 = "/var/cache/pacman/pkg"
+	DIRSIZE1 = [DIR1]
+	DIRSIZE2 = [DIR2]
+	a=dircache.listdir(DIR1)
+	list_of_files1=a[:]	
+	DIRSIZE1.append(len(list_of_files1))
+	b=dircache.listdir(DIR2)
+	list_of_files2=b[:]	
+	DIRSIZE2.append(len(list_of_files2))
+	DIRSIZE1.append(GetTotalSize(DIR1))
+	DIRSIZE2.append(GetTotalSize(DIR2))
+	
+	MB1 = int(DIRSIZE1[2]) / (1024.0*1024)
+	MB2 = int(DIRSIZE2[2]) / (1024.0*1024)
+	
+	totalb = int(DIRSIZE1[2]) + int(DIRSIZE2[2])
+	totalmb = round(int(totalb) / (1024.0*1024), 3)
+	
+	out("\nDeletion done.")
+	out("\nDirectory-Listing after the deletion:")
+	out("=============================================================")
+	print "%-25s %-8s %-14s %-14s" % ('Directory', 'Files', 'Size (b)', 'Size (mb)')
+	out("-------------------------------------------------------------")
+	print "%-25s %-8s %-14s %-14s" % (DIRSIZE1[0], str(DIRSIZE1[1]), str(DIRSIZE1[2]), str(round(MB1, 3)))
+	print "%-25s %-8s %-14s %-14s" % (DIRSIZE2[0], str(DIRSIZE2[1]), str(DIRSIZE2[2]), str(round(MB2, 3)))
+	out("-------------------------------------------------------------")
+	print "%-34s %-14s %-14s" % ('Total used space:', str(totalb), str(totalmb))
+	
+elif REPO == 1:
+	ARG = ""
+	if len(sys.argv) >= 4:
+		OPT = sys.argv[(len(sys.argv)-2)]
+		ARG = sys.argv[(len(sys.argv)-1)]
+	elif len(sys.argv) >= 3:
+		OPT = sys.argv[(len(sys.argv)-1)]
+	else:
+		if NC == 0:
+			out(red("\n!  You must specify the option you want to do [list|add|del]"))
+		else:
+			out("\n!  You must specify the option you want to do [list|add|del]")
+		out("!  Try /usr/bin/qpkg -h if you are unsure.\n")
+		out("!  If you have further problems, please contact us in")
+		out("!  #linux-stats on irc.freenode.net\n")
+		raise SystemExit, 127
+	
+	if OPT == "list":
+		if NC == 0:
+			out(blue("\nAvailable user repositories:\n"))
+		else:
+			out("\nAvailable user repositories:\n")
+		for x in qpkgrepos.REPOSITORIES:
+			repo = re.findall("^([^|]*)|([^|]*)$", x)
+			
+			if len(repo[0][0]) >= 13:
+				tab = "\t"
+			elif len(repo[0][0]) <= 5:
+				tab = "\t\t\t"
+			else:
+				tab = "\t\t"
+			out("["+repo[0][0]+"]"+tab+"Server = "+repo[1][1])
+		
+		if NC == 0:
+			out(blue("\nUser repositories added to your /etc/pacman.conf:\n"))
+		else:
+			out("\nUser repositories added to your /etc/pacman.conf:\n")
+		if not os.path.exists("/etc/pacman.d/qpkg.repos"):
+			out("No user repositories added until now...")
+		else:
+			ADDEDREPOS = []
+			fp = open("/etc/pacman.d/qpkg.repos", 'r')
+			ADDEDREPOS = fp.readlines()
+			fp.close()
+			if len(ADDEDREPOS) <= 0:
+				out("No user repositories added until now...")
+			else:
+				a = 0
+				b = 0
+				OUT = ""
+				for x in ADDEDREPOS:
+					if a == 0:
+						if len(x.strip("\n")) >= 13:
+							tab = "\t"
+						elif len(x.strip("\n")) <= 7:
+							tab = "\t\t\t"
+						else:
+							tab = "\t\t"
+						OUT = str(x.strip("\n"))+str(tab)
+						a = 1
+					elif a == 1:
+						out(OUT+str(x.strip("\n")))
+						OUT = ""
+						a = 0
+					b = b + 1
+		
+		if NC == 0:
+			out(blue("\nOptions:"))
+		else:
+			out("\nOptions:")
+		out("qpkg -r add [repo-name]\t\tAdd an user repository")
+		out("qpkg -r del [repo-name]\t\tRemove an user repository")
+		out("\"[repo-name]\" is the name between the square brackets.")
+		if NC == 0:
+			out(blue("\nRemember:"))
+		else:
+			out("\nRemember:")
+		out("You have to add the following lines to your /etc/pacman.conf")
+		out("to get this to work:")
+		out("[qpkg]")
+		out("Include = /etc/pacman.d/qpkg.repos\n")
+		
+	elif OPT == "add":
+		uid=os.getuid()
+		if uid != 0:
+			if NC == 0:
+				out(red("\nYou have to be root, to add repositories to /etc/pacman.d/!\n"))
+			else:
+				out("\nYou have to be root, to add repositories to /etc/pacman.d/!\n")
+			raise SystemExit, 127
+		if not ARG or ARG == "":
+			if NC == 0:
+				out(red("\n!  You must specify the name of the repository you want to add."))
+			else:
+				out("\n!  You must specify the name of the repository you want to add.")
+			out("!  See \"/usr/bin/qpkg -r list\" for the list of available repos.\n")
+			out("!  If you have further problems, please contact us in")
+			out("!  #linux-stats on irc.freenode.net\n")
+			raise SystemExit, 127
+		ADDEDREPOS = []
+		fp = open("/etc/pacman.d/qpkg.repos", 'r')
+		ADDEDREPOS = fp.readlines()
+		fp.close()
+		for y in ADDEDREPOS:
+			if y == "["+ARG+"]\n":
+				if NC == 0:
+					out(red("This Repository already exists in your /etc/pacman.d/qpkg.repos!"))
+				else:
+					out("This Repository already exists in your /etc/pacman.d/qpkg.repos!")
+				raise SystemExit, 127
+		for x in qpkgrepos.REPOSITORIES:
+			repo = re.findall("^([^|]*)|([^|]*)$", x)
+			if repo[0][0] == ARG:
+				if NC == 0:
+					out(blue("Adding repository \""+repo[0][0]+"\"..."))
+				else:
+					out("Adding repository \""+repo[0][0]+"\"...")
+				fp = open("/etc/pacman.d/qpkg.repos", 'a')
+				fp.write("["+repo[0][0]+"]\n")
+				fp.write("Server = "+repo[1][1]+"\n")
+				fp.close()
+				out("Repository successfully added.")
+		
+	elif OPT == "del":
+		uid=os.getuid()
+		if uid != 0:
+			if NC == 0:
+				out(red("\nYou have to be root, to remove repositories from /etc/pacman.d/!\n"))
+			else:
+				out("\nYou have to be root, to remove repositories from /etc/pacman.d/!\n")
+			raise SystemExit, 127
+	
+		if not ARG or ARG == "":
+			if NC == 0:
+				out(red("\n!  You must specify the name of the repository you want to remove."))
+			else:
+				out("\n!  You must specify the name of the repository you want to remove.")
+			out("!  See \"/usr/bin/qpkg -r list\" for the list of available repos.\n")
+			out("!  If you have further problems, please contact us in")
+			out("!  #linux-stats on irc.freenode.net\n")
+			raise SystemExit, 127
+		ADDEDREPOS = []
+		fp = open("/etc/pacman.d/qpkg.repos", 'r')
+		ADDEDREPOS = fp.readlines()
+		fp.close()
+		test = 0
+		tost = 0
+		NEWADDED = []
+		for y in ADDEDREPOS:
+			if y == "["+ARG+"]\n":
+				test = test + 1
+				tost = 1
+			elif y != "["+ARG+"]\n" and test == 1:
+				test = 0
+			elif y != "["+ARG+"]\n" and test != 1:
+				NEWADDED.append(y)
+		if tost == 0:
+			if NC == 0:
+				out(red("This Repository doesn't exist in your /etc/pacman.d/qpkg.repos!"))
+			else:
+				out("This Repository doesn't exist in your /etc/pacman.d/qpkg.repos!")
+			raise SystemExit, 127
+		if NC == 0:
+			out(blue("Removing repository \""+ARG+"\"..."))
+		else:
+			out("Removing repository \""+ARG+"\"...")
+		fp = open("/etc/pacman.d/qpkg.repos", 'w')
+		fp.close()
+		for z in NEWADDED:
+			fp = open("/etc/pacman.d/qpkg.repos", 'a')
+			fp.write(z)
+			fp.close()
+		out("Repository successfully removed.")
+	
+elif INSTALLAURPKG == 1:
+	uid=os.getuid()
+	homedir=os.path.expanduser('~')
+	if uid != 0:
+		BUILDDIR = "/tmp/qpkg"
+		SAVEDIR = homedir+"/qpkg.packages"
+	else:
+		BUILDDIR = "/tmp/qpkg"
+		SAVEDIR = homedir+"/qpkg.packages"
+		
+	if len(sys.argv) >= 3:
+		SEARCH = sys.argv[(len(sys.argv)-1)]
+	else:
+		if NC == 0:
+			out(red("\n!  You must specify the *exact* packagename which you want to install from AUR."))
+		else:
+			out("\n!  You must specify the *exact* packagename which you want to install from AUR.")
+		out("!  Try /usr/bin/qpkg -h if you are unsure.\n")
+		out("!  If you have further problems, please contact us in")
+		out("!  #linux-stats on irc.freenode.net\n")
+		raise SystemExit, 127
+	
+	if uid != 0:
+		if NC == 0:
+			out(red("\nAre you sure, that you want to create the package for \""+SEARCH+"\" directly from AUR?"))
+		else:
+			out("\nAre you sure, that you want to create the package for \""+SEARCH+"\" directly from AUR?")
+	else:
+		if NC == 0:
+			out(red("\nAre you sure, that you want to install \""+SEARCH+"\" directly from AUR?"))
+		else:
+			out("\nAre you sure, that you want to install \""+SEARCH+"\" directly from AUR?")
+		
+	YESNO = raw_input("[Y/n]   ")
+	if YESNO == "n" or YESNO == "N" or YESNO == "no" or YESNO == "No" or YESNO == "NO":
+		sys.exit(1)
+	
+	URL = "http://aur.archlinux.org/packages/"+SEARCH+"/"+SEARCH+""
+	
+	
+	out("\n> Getting PKGBUILD and other needed files from AUR...")
+	PROXY = ""
+	FILELIST = ""
+	if os.environ.has_key('http_proxy'):
+		PROXY = os.environ['http_proxy'].strip('/')
+	try:
+		if not PROXY or PROXY == "":
+			response = urllib2.urlopen(URL)
+		else:
+			HTTP = re.findall(r'\b(http)', PROXY)
+			if not HTTP or len(HTTP) == 0:
+				if NC == 0:
+					out(red("\nYour http_proxy setting is wrong!"))
+				else:
+					out("\nYour http_proxy setting is wrong!")
+				out("The string \"http://\" is missed.")
+				out("Try something like \"http://your.proxy.com:port\".")
+				out("I'll continue here by adding the missed string to our")
+				out("temporary proxy-setting. You should change $http_proxy")
+				out("by yoursef.\n")
+				out("If you have further problems, please contact us in")
+				out("#linux-stats on irc.freenode.net\n")
+				PROXY = "http://"+PROXY
+			proxy_support = urllib2.ProxyHandler({"http" : PROXY})
+			opener = urllib2.build_opener(proxy_support)
+			urllib2.install_opener(opener)
+			response = urllib2.urlopen(URL)
+	except:
+		if NC == 0:
+			out(red("\nCould not get the filelist from AUR."))
+		else:
+			out("\nCould not get the filelist from AUR.")
+		out("Maybe you've misspelled the packagename?")
+		out("Remember, the packagename must be the exact name as it is in AUR.")
+		out("(without the version-string)\n")
+		out("If you have further problems, please contact us in")
+		out("#linux-stats on irc.freenode.net\n")
+		raise SystemExit, 127
+	FILELIST = response.read(4096)
+	FLIST = []
+	soup = BeautifulSoup(FILELIST)
+	matchingSpanTags = soup.fetch('a')
+	FLIST = [spanTag.contents[0].string for spanTag in matchingSpanTags]
+	FLIST[0:5] = []
+	# out(str(FLIST))
+	
+	if os.path.exists(BUILDDIR):
+		os.system("rm -fr "+BUILDDIR+" &>/dev/null")
+	if not os.path.exists(BUILDDIR):
+		out("> Creating "+BUILDDIR+"...")
+		os.system("mkdir -p "+BUILDDIR+" &>/dev/null")
+	if not os.path.exists(SAVEDIR):
+		out("> Creating "+SAVEDIR+"...")
+		os.system("mkdir -p "+SAVEDIR+" &>/dev/null")
+	
+	for x in FLIST:
+		out("> Saving \""+x+"\" in "+BUILDDIR+"...")
+		CONTENT = ""
+		response = ""
+		FURL = ""
+		FURL = URL+"/"+x
+		if os.environ.has_key('http_proxy'):
+			PROXY = os.environ['http_proxy'].strip('/')
+		try:
+			if not PROXY or PROXY == "":
+				response = urllib2.urlopen(FURL)
+			else:
+				HTTP = re.findall(r'\b(http)', PROXY)
+				if not HTTP or len(HTTP) == 0:
+					if NC == 0:
+						out(red("\nYour http_proxy setting is wrong!"))
+					else:
+						out("\nYour http_proxy setting is wrong!")
+					out("The string \"http://\" is missed.")
+					out("Try something like \"http://your.proxy.com:port\".")
+					out("I'll continue here by adding the missed string to our")
+					out("temporary proxy-setting. You should change $http_proxy")
+					out("by yoursef.\n")
+					out("If you have further problems, please contact us in")
+					out("#linux-stats on irc.freenode.net\n")
+					PROXY = "http://"+PROXY
+				proxy_support = urllib2.ProxyHandler({"http" : PROXY})
+				opener = urllib2.build_opener(proxy_support)
+				urllib2.install_opener(opener)
+				response = urllib2.urlopen(FURL)
+		except:
+			if NC == 0:
+				out(red("\nCould not get the needed files from AUR."))
+			else:
+				out("\nCould not get the needed files from AUR.")
+			out("Perhaps there is no internet-connection available?\n")
+			out("If you have further problems, please contact us in")
+			out("#linux-stats on irc.freenode.net\n")
+			raise SystemExit, 127
+		CONTENT = response.read(40960)
+		fp = open(BUILDDIR+"/"+x, 'w')
+		fp.write(CONTENT)
+		fp.close()
+	
+	if NC == 0:
+		out(blue("! Do you want to view the PKGBUILD first before building the package?"))
+	else:
+		out("! Do you want to view the PKGBUILD first before building the package?")
+	YESNO = raw_input("[Y/n]   ")
+	if YESNO == "n" or YESNO == "N" or YESNO == "no" or YESNO == "No" or YESNO == "NO":
+		pass
+	else:
+		out("> Loading PKGBUILD...")
+		fp = open(BUILDDIR+"/PKGBUILD", 'r')
+		PKGBUILD = fp.readlines()
+		fp.close()
+		out("=========================================================================")
+		for x in PKGBUILD:
+			out(x.strip("\n"))
+		out("=========================================================================")
+		if NC == 0:
+			out(blue("! Do you want to continue with building the package?"))
+		else:
+			out("! Do you want to continue with building the package?")
+		YESNO = raw_input("[Y/n]   ")
+		if YESNO == "n" or YESNO == "N" or YESNO == "no" or YESNO == "No" or YESNO == "NO":
+			if NC == 0:
+				out(blue("Exiting...\n"))
+			else:
+				out("Exiting...\n")
+			sys.exit(0)
+	
+	RESULT = ""
+	INSTALLTHIS = ""
+	out("> Running makepkg on the saved PKGBUILD... (please be patient!)")
+	os.system("cd "+BUILDDIR)
+	os.chdir(BUILDDIR)
+	RESULT = commands.getoutput("if ! makepkg -f &>/dev/null; then echo \"failed\"; fi")
+	
+	if RESULT == "failed":
+		if NC == 0:
+			out(red("! There was a Problem when building the package!"))
+		else:
+			out("! There was a Problem when building the package!")
+		out("There is no solution if makepkg fails for now, but we are working on this.\n")
+		out("You've now the ability to run makepkg again to get the whole output of it.")
+		out("Do you want to run makepkg again to get the whole output?")
+		YESNO = raw_input("[Y/n]   ")
+		if YESNO == "n" or YESNO == "N" or YESNO == "no" or YESNO == "No" or YESNO == "NO":
+			if os.path.exists(""+BUILDDIR+""):
+				out("> Removing "+BUILDDIR+" and its contents...")
+				os.system("rm -fr "+BUILDDIR+" &>/dev/null")
+			sys.exit(1)
+		else:
+			out("> Running makepkg on the saved PKGBUILD... (please be patient!)")
+			os.system("cd "+BUILDDIR+"")
+			os.chdir(""+BUILDDIR+"")
+			os.system("makepkg -f")
+			if os.path.exists(""+BUILDDIR+""):
+				out("> Removing "+BUILDDIR+" and its contents...")
+				os.system("rm -fr "+BUILDDIR+" &>/dev/null")
+			sys.exit(1)
+	else:
+		INSTALLTHIS = commands.getoutput("ls -l | grep \".pkg.tar\" | sed -e 's/.* \([^ ]*\)/\\1/'")
+		out("> Copying created package \""+INSTALLTHIS+"\" to \""+SAVEDIR+"\"...")
+		os.system("cp \""+INSTALLTHIS+"\" \""+SAVEDIR+"\" &>/dev/null")
+		if uid == 0:
+			out("> Installing created package \""+INSTALLTHIS+"\"...")
+			RESULT = ""
+			RESULT = commands.getoutput("if ! pacman -A ./"+INSTALLTHIS+"; then echo \"failed\"; fi")
+			if RESULT == "failed":
+				if NC == 0:
+					out(red("! There was a Problem when installing the package!"))
+				else:
+					out("! There was a Problem when installing the package!")
+				out("There is no solution if pacman fails for now, but we are working on this.\n")
+				out("You've now the ability to run pacman -A again to get the whole output of it.")
+				out("Do you want to run pacman -A again to get the whole output?")
+				YESNO = raw_input("[Y/n]   ")
+				if YESNO == "n" or YESNO == "N" or YESNO == "no" or YESNO == "No" or YESNO == "NO":
+					if os.path.exists(""+BUILDDIR+""):
+						out("> Removing "+BUILDDIR+" and its contents...")
+						os.system("rm -fr "+BUILDDIR+" &>/dev/null")
+					sys.exit(1)
+				else:
+					out("> Installing created package \""+INSTALLTHIS+"\"...")
+					os.system("cd "+BUILDDIR+"")
+					os.chdir(""+BUILDDIR+"")
+					os.system("pacman -A ./"+INSTALLTHIS)
+					if os.path.exists(""+BUILDDIR+""):
+						out("> Removing "+BUILDDIR+" and its contents...")
+						os.system("rm -fr "+BUILDDIR+" &>/dev/null")
+					sys.exit(1)
+	if os.path.exists(""+BUILDDIR+""):
+		out("> Removing "+BUILDDIR+" and its contents...")
+		os.system("rm -fr "+BUILDDIR+" &>/dev/null")
+
+
+
+
+elif FILE == 1:
+	if len(sys.argv) >= 3:
+		SEARCH = sys.argv[(len(sys.argv)-1)]
+	else:
+		if NC == 0:
+			out(red("\n!  You must specify a searchstring to search for."))
+		else:
+			out("\n!  You must specify a searchstring to search for.")
+		out("!  Try /usr/bin/qpkg -h if you are unsure.\n")
+		out("!  If you have further problems, please contact us in")
+		out("!  #linux-stats on irc.freenode.net\n")
+		raise SystemExit, 127
+	out("Searching for package that contains \""+SEARCH+"\"...  \n")
+	RESPONSE = commands.getoutput("for x in `locate "+SEARCH+" | xargs`; do pacman -Qo ${x} 2>/dev/null; done")
+	
+	if not RESPONSE:
+		out("No file/package found...")
+	else:
+		out(RESPONSE)
+elif LIST == 1:
+	if len(sys.argv) >= 3:
+		SEARCH = sys.argv[(len(sys.argv)-1)]
+	else:
+		if NC == 0:
+			out(red("\n!  You must specify a searchstring to search for."))
+		else:
+			out("\n!  You must specify a searchstring to search for.")
+		out("!  Try /usr/bin/qpkg -h if you are unsure.\n")
+		out("!  If you have further problems, please contact us in")
+		out("!  #linux-stats on irc.freenode.net\n")
+		raise SystemExit, 127
+	out("Searching for package content...  \n")
+	RESPONSE = commands.getoutput("pacman -Ql "+SEARCH+" 2>/dev/null")
+	
+	if not RESPONSE:
+		out("No package named \""+SEARCH+"\" found...")
+	else:
+		out(RESPONSE)
+elif INFO == 1:
+	if len(sys.argv) >= 3:
+		SEARCH = sys.argv[(len(sys.argv)-1)]
+	else:
+		if NC == 0:
+			out(red("\n!  You must specify a package to list the information."))
+		else:
+			out("\n!  You must specify a package to list the information.")
+		out("!  Try /usr/bin/qpkg -h if you are unsure.\n")
+		out("!  If you have further problems, please contact us in")
+		out("!  #linux-stats on irc.freenode.net\n")
+		raise SystemExit, 127
+	out("Getting package information...  \n")
+	RESPONSE = commands.getoutput("pacman -Qi "+SEARCH+" 2>/dev/null")
+	
+	if not RESPONSE:
+		out("No package named \""+SEARCH+"\" found...")
+	else:
+		out(RESPONSE)
+else:
+	if len(sys.argv) >= 2:
+		SEARCH = sys.argv[(len(sys.argv)-1)]
+	else:
+		if NC == 0:
+			out(red("\n!  You must specify a searchstring to search for."))
+		else:
+			out("\n!  You must specify a searchstring to search for.")
+		out("!  Try /usr/bin/qpkg -h if you are unsure.\n")
+		out("!  If you have further problems, please contact us in")
+		out("!  #linux-stats on irc.freenode.net\n")
+		raise SystemExit, 127
+	out("Searching for the packages...  \n")
+	TRESULT = []
+	DRESULT = []
+	if TITLE == 1:
+		index = []
+		a = 0
+		for x in qpkgpackn.NAMES:
+			if re.findall(SEARCH, x):
+				index.append(a)
+			a = a + 1
+		for i in index:
+			#
+			id = int(i)
+			a = 0
+			for j in qpkgpackc.COMPLETE:
+				if a == id:
+					TRESULT.append(j)
+				a = a + 1
+		if NC == 0:
+			out(blue("Search matches from the package names:\n"))
+		else:
+			out("Search matches from the package names:\n")
+		if len(TRESULT) <= 0:
+			if NC == 0:
+				out(red("No packages found"))
+			else:
+				out("No packages found")
+		else:
+			for x in TRESULT:
+				#
+				package = re.findall("^([^|]*)|M|([^|]*)|M|([^|]*)|M|([^|]*)|M|([^|]*)$", x)
+				if NC == 0:
+					out(blue(str(package[0][0])+"/"+str(package[4][1])+"-"+str(package[8][1])))
+				else:
+					out(str(package[0][0])+"/"+str(package[4][1])+"-"+str(package[8][1]))
+				out("    "+str(package[12][1]))
+				out("    "+str(package[16][1]))
+	if DESC == 1:
+		index = []
+		a = 0
+		for x in qpkgpackd.DESCS:
+			if re.findall(SEARCH, x):
+				index.append(a)
+			a = a + 1
+		for i in index:
+			#
+			id = int(i)
+			a = 0
+			for j in qpkgpackc.COMPLETE:
+				if a == id:
+					DRESULT.append(j)
+				a = a + 1
+		if NC == 0:
+			out(blue("\nSearch matches from the package descriptions:\n"))
+		else:
+			out("\nSearch matches from the package descriptions:\n")
+		if len(DRESULT) <= 0:
+			if NC == 0:
+				out(red("No packages found"))
+			else:
+				out("No packages found")
+		else:
+			for x in DRESULT:
+				#
+				package = re.findall("^([^|]*)|M|([^|]*)|M|([^|]*)|M|([^|]*)|M|([^|]*)$", x)
+				if NC == 0:
+					out(blue(str(package[0][0])+"/"+str(package[4][1])+"-"+str(package[8][1])))
+				else:
+					out(str(package[0][0])+"/"+str(package[4][1])+"-"+str(package[8][1]))
+				out("    "+str(package[12][1]))
+				out("    "+str(package[16][1]))
+	
+	if AUR == 1:
+		if NC == 0:
+			out(blue("\nSearch matches from AUR:\n"))
+		else:
+			out("\nSearch matches from AUR:\n")
+		PLIST = []
+		index = []
+		a = 0
+		b = 0
+		files = []
+		fields = [
+					('PP', str(100)),
+					('K', str(SEARCH))
+					]
+		
+		PACKAGES = []
+		PACKAGES.append([])
+		OUT = post_multipart(AUR_HOST, AUR_PORT, AUR_PATH, fields, files)
+		
+		if len(OUT) <= 1024:
+			if NC == 0:
+				out(red("Wrong response from AUR"))
+			else:
+				out("Wrong response from AUR")
+			raise SystemExit, 127
+		
+		def blueOrBlackMatcher(value):
+			return value.lower() in ('blue', 'black', 'green')
+		desiredAttributes = {'class' : blueOrBlackMatcher}
+		soup = BeautifulSoup(OUT)
+		matchingSpanTags = soup.fetch('span', desiredAttributes)
+		PLIST = [spanTag.contents[0].string for spanTag in matchingSpanTags]
+		PLIST[0:11] = []
+		
+		## stripping the new safe-flag
+		num = len(PLIST) - 1
+		PLIST[num:] = []
+		
+		
+		# out(str(PLIST))
+		
+		if len(PLIST) <= 0:
+			if NC == 0:
+				out(red("No packages found"))
+			else:
+				out("No packages found")
+		else:
+			for x in PLIST:
+				item = x.replace("&nbsp;","")
+				if a == 6:
+					a = 0
+					b = b + 1
+					PACKAGES.append([])
+				PACKAGES[b].append(str(item))	
+				a = a + 1
+			
+			for package in PACKAGES:
+				name = package[2].replace(" ","-")
+				pname = re.sub(r'\b( .*)', r'', package[2])
+				if NC == 0:
+					out(blue(str(package[0])+"/"+str(name)))
+				else:
+					out(str(package[0])+"/"+str(package[2]))
+				out("    "+str(package[4]))
+				out("    Maintainer: "+str(package[5]))
+				out("    URL: http://aur.archlinux.org/packages.php?K="+str(pname))
+		
+			
+
+out("")
+
+

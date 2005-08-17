@@ -1,0 +1,80 @@
+########################################################################
+#                                 Query PKG                            #
+#                            packagesearch-script                      #
+########################################################################
+# This script was written by Alexander Mieland (dma147 in #gentoo.de)  #
+# Contact:      dma147 _AT_ linux-stats _DOT_ org                      #
+# Homepage:     http://www.linux-stats.org                             #
+# IRC:          #linux-stats, #archlinux-anfaenger on irc-freenode.net #
+########################################################################
+# $Id: $
+
+
+Description:
+""""""""""""
+With this tool you can search *all* (known) arch repositories.
+It searches through 'current', 'extra', 'unstable', 'community',
+'testing', all TURs and all (known) PURs.
+You can use full featured regular expressions in your searchstring.
+You also can install packages from AUR directly. Use the -p argument 
+to use this feature.
+
+REQUIREMENTS:
+"""""""""""""
+    - Bash
+    - Python
+    - Wget
+
+
+INSTALLATION:
+"""""""""""""
+Simply do a `pacman -S qpkg`.
+
+
+UPDATE:
+"""""""
+See installation.
+To update the package-databases, use the shipped tool `qpkg-update`
+You should place this into a cronjob, which will start `qpkg-update`
+every 24 hours like this:
+
+0 12 * * * /usr/bin/qpkg-update &>/dev/null
+
+This will update the package-database every day at 12h00.
+
+
+USE:
+""""
+
+Try `qpkg -h` to get help!
+    
+    - This will install the package "alevt" directly from AUR:
+      # qpkg -p alevt
+      
+    - This will find all packages which contains "themes" in their 
+      name:
+      # qpkg themes
+
+    - This will also find all packages, which containes "themes" 
+      in their name:
+      # qpkg ".*themes.*"
+
+    - This will also find all packages, which containes "themes" 
+      in their name:
+      # qpkg -t ".*themes.*"
+      
+    - This will find all packages, which containes "themes" in their
+      description:
+      # qpkg -d themes
+
+    - This will also find all packages, which containes "themes" in 
+      their description:
+      # qpkg -d ".*themes.*"
+      
+    
+
+I hope this tool will help everybody... ;)
+Have fun...
+
+dma147
+
